@@ -150,20 +150,46 @@ On Windows the app requests **Administrator** elevation automatically (UAC).
 
 ```text
 Gotcha/
-├── Gotcha.py              # Main GUI
-├── npcap.py               # Silent Npcap-compatible install helper
-├── requirements.txt
-├── Include/               # Headers (WinDivert, pcap, …)
-├── Lib/x64/               # Import libraries
-├── main/bin/              # Built flood .exe + runtime DLLs
-├── workspace/             # C++ sources (or repo root, depending on branch)
-│   ├── NPtcpT.cpp
-│   ├── NPudpT.cpp
-│   ├── NPicmpT.cpp
-│   ├── NPdnsT.cpp
+├── .vscode/
+│   ├── c_cpp_properties.json
+│   ├── launch.json
+│   ├── settings.json
+│   └── tasks.json
+├── Include/
+│   ├── pcap.h
+│   ├── windivert.h
+│   └── pcap/          # bpf, dlt, pcap.h, …
+├── Lib/
+│   └── x64/
+│       ├── WinDivert.lib
+│       └── wpcap.lib
+├── main/
+│   ├── Gotcha.py
+│   ├── bin/
+│   │   ├── WinDivert.dll
+│   │   └── WinDivert64.sys
+│   └── other/
+│       ├── Guide.html
+│       ├── Scheme.html
+│       ├── images.ico
+│       └── images/    # dhcp.png, dns.png, dos.png, mac.png, …
+├── npcap/
+│   ├── npcap.py
+│   ├── NPFInstall.exe
+│   ├── Packet.dll
+│   ├── wpcap.dll
+│   ├── npcap.sys
+│   ├── npcap.cat
+│   └── npcap.inf
+├── workspace/
 │   ├── NParpT.cpp
-│   └── NPmac-aT.cpp
-└── .vscode/               # Build / debug tasks
+│   ├── NPicmpT.cpp
+│   ├── NPmac-aT.cpp
+│   ├── NPtcpT.cpp
+│   └── NPudpT.cpp
+├── LICENSE
+├── README.md          # уже наш английский
+└── requirements.txt
 ```
 
 Release packages contain **prebuilt** `.exe` and DLLs only — you do not need a compiler to use Gotcha from Releases.
