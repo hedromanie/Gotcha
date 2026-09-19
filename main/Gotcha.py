@@ -1763,7 +1763,7 @@ class Gotcha:
         if self.dns_spoof_running:
             self.root.after(1000, self.update_dns_spoof_stats)
 
-    # -------------------- MAC flood (без изменений) --------------------
+    # -------------------- MAC flood (Npcap, L2) --------------------
     def setup_mac_flood_tab(self, parent):
         main_frame = ttk.Frame(parent)
         main_frame.pack(fill='both', expand=True, padx=8, pady=8)
@@ -1786,6 +1786,13 @@ class Gotcha:
         self.mac_duration.pack(side='left', padx=2)
         self.mac_duration.insert(0, "60")
         ttk.Label(row3, text="(0=бесконечно)").pack(side='left', padx=5)
+        row_threads = ttk.Frame(params_frame)
+        row_threads.pack(fill='x', padx=5, pady=5)
+        ttk.Label(row_threads, text="Потоки:", width=12).pack(side='left', padx=2)
+        self.mac_threads = ttk.Entry(row_threads, width=10, font=('Arial', 9))
+        self.mac_threads.pack(side='left', padx=2)
+        self.mac_threads.insert(0, "4")
+        ttk.Label(row_threads, text="1–8").pack(side='left', padx=6)
         row4 = ttk.Frame(params_frame)
         row4.pack(fill='x', padx=5, pady=5)
         ttk.Label(row4, text="MAC назначения:", width=12).pack(side='left', padx=2)
@@ -1835,12 +1842,14 @@ class Gotcha:
         self.mac_stop_btn.config(state='normal')
         try:
             interface = self.mac_interface.get()
-            threads = 1
             duration = int(self.mac_duration.get())
+            threads = int(self.mac_threads.get().strip())
+            if threads < 1 or threads > 8:
+                raise ValueError("Потоки: 1–8")
             dst_mac = self.mac_dst.get().strip()
             random_mac = self.mac_random.get()
-        except ValueError:
-            messagebox.showerror("Ошибка", "Проверьте введённые данные")
+        except ValueError as e:
+            messagebox.showerror("Ошибка", f"Проверьте введённые данные\n{e}")
             self.mac_attack_running = False
             self.mac_start_btn.config(state='normal')
             return
@@ -1850,6 +1859,7 @@ class Gotcha:
             self.mac_attack_running = False
             self.mac_start_btn.config(state='normal')
             return
+        # NPmac-aT: <interface|auto> <threads> <duration> [dst_mac] [--random-mac]
         args = [exe_path, interface, str(threads), str(duration)]
         if dst_mac:
             args.append(dst_mac)
@@ -1949,9 +1959,8 @@ class Gotcha:
         self.custom_port.pack(side='left', padx=2)
         self.custom_port.insert(0, "80")
 
-        # MAC назначения (жертвы) – показывается для всех, кроме DNS
+        # MAC назначения — только для ARP (L2)
         row_mac = ttk.Frame(params_frame)
-        row_mac.pack(fill='x', padx=5, pady=5)
         ttk.Label(row_mac, text="MAC назначения:", width=12).pack(side='left', padx=2)
         self.custom_dst_mac = ttk.Entry(row_mac, width=25, font=('Arial', 9))
         self.custom_dst_mac.pack(side='left', padx=2)
@@ -1968,6 +1977,16 @@ class Gotcha:
         ttk.Label(row4, text="байт").pack(side='left', padx=2)
         self.custom_packet_size.master = row4
 
+        # Количество потоков (1..8)
+        row_threads = ttk.Frame(params_frame)
+        row_threads.pack(fill='x', padx=5, pady=5)
+        ttk.Label(row_threads, text="Потоки:", width=12).pack(side='left', padx=2)
+        self.custom_threads = ttk.Entry(row_threads, width=10, font=('Arial', 9))
+        self.custom_threads.pack(side='left', padx=2)
+        self.custom_threads.insert(0, "4")
+        ttk.Label(row_threads, text="1–8").pack(side='left', padx=6)
+        self.custom_threads.master = row_threads
+
         # Время атаки
         row5 = ttk.Frame(params_frame)
         row5.pack(fill='x', padx=5, pady=5)
@@ -1977,14 +1996,16 @@ class Gotcha:
         self.custom_packet_count.insert(0, "60")
         ttk.Label(row5, text="0 = бесконечно").pack(side='left', padx=6)
 
-        # Опции случайный IP / MAC
+        # Опции: случайный IP (TCP/UDP/ICMP/ARP), случайный MAC (только ARP)
         self.custom_options_frame = ttk.Frame(params_frame)
         self.custom_random_ip = tk.BooleanVar(value=False)
         self.custom_random_mac = tk.BooleanVar(value=False)
-        ttk.Checkbutton(self.custom_options_frame, text="Случайный IP", variable=self.custom_random_ip).pack(side='left', padx=5)
-        ttk.Checkbutton(self.custom_options_frame, text="Случайный MAC", variable=self.custom_random_mac).pack(side='left', padx=5)
+        self.custom_random_ip_cb = ttk.Checkbutton(self.custom_options_frame, text="Случайный IP", variable=self.custom_random_ip)
+        self.custom_random_ip_cb.pack(side='left', padx=5)
+        self.custom_random_mac_cb = ttk.Checkbutton(self.custom_options_frame, text="Случайный MAC", variable=self.custom_random_mac)
+        # случайный MAC по умолчанию скрыт, показывается только для ARP
         self.custom_options_frame.pack(fill='x', padx=5, pady=5)
-        self.custom_options_frame.pack_forget()  # изначально скрыто
+        self.custom_options_frame.pack_forget()
 
         # Интерфейс
         self.custom_row7 = ttk.Frame(params_frame)
@@ -2057,19 +2078,31 @@ class Gotcha:
                 self.custom_packet_size.delete(0, tk.END)
                 self.custom_packet_size.insert(0, "1024")
 
-        # MAC назначения – скрываем для DNS
+        # Потоки — для всех, кроме DNS (scapy сам управляет)
         if proto == "DNS":
-            self.custom_dst_mac.master.pack_forget()
+            self.custom_threads.master.pack_forget()
         else:
-            if not self.custom_dst_mac.master.winfo_ismapped():
-                target = self.custom_port_frame if self.custom_port_frame.winfo_ismapped() else self.custom_options_frame
-                if not target.winfo_ismapped():
-                    target = self.custom_row7
-                self.custom_dst_mac.master.pack(fill='x', padx=5, pady=5, before=target)
+            if not self.custom_threads.master.winfo_ismapped():
+                target = self.custom_options_frame if self.custom_options_frame.winfo_ismapped() else self.custom_row7
+                self.custom_threads.master.pack(fill='x', padx=5, pady=5, before=target)
 
-        # Опции случайный IP/MAC – только для TCP/UDP/ARP/ICMP
+        # MAC назначения — только ARP
+        if proto == "ARP":
+            if not self.custom_dst_mac.master.winfo_ismapped():
+                target = self.custom_options_frame if self.custom_options_frame.winfo_ismapped() else self.custom_row7
+                self.custom_dst_mac.master.pack(fill='x', padx=5, pady=5, before=target)
+        else:
+            self.custom_dst_mac.master.pack_forget()
+
+        # Опции: случайный IP для TCP/UDP/ICMP/ARP; случайный MAC только для ARP
         if proto in ["TCP", "UDP", "ARP", "ICMP"]:
             self.custom_options_frame.pack(fill='x', padx=5, pady=5, before=self.custom_row7)
+            if proto == "ARP":
+                if not self.custom_random_mac_cb.winfo_ismapped():
+                    self.custom_random_mac_cb.pack(side='left', padx=5)
+            else:
+                self.custom_random_mac_cb.pack_forget()
+                self.custom_random_mac.set(False)
         else:
             self.custom_options_frame.pack_forget()
 
@@ -2149,8 +2182,19 @@ class Gotcha:
             continuous = (duration == 0)
             interface = self.custom_interface.get()
             random_ip = self.custom_random_ip.get()
-            random_mac = self.custom_random_mac.get()
-            dst_mac = self.custom_dst_mac.get().strip() if protocol != "DNS" else None
+            random_mac = self.custom_random_mac.get() if protocol == "ARP" else False
+            dst_mac = self.custom_dst_mac.get().strip() if protocol == "ARP" else None
+
+            # Потоки: строго 1..8
+            if protocol != "DNS":
+                try:
+                    num_threads = int(self.custom_threads.get().strip())
+                except ValueError:
+                    raise ValueError("Количество потоков должно быть числом от 1 до 8")
+                if num_threads < 1 or num_threads > 8:
+                    raise ValueError("Количество потоков должно быть от 1 до 8")
+            else:
+                num_threads = 1
 
             if duration < 0:
                 raise ValueError("Время атаки не может быть отрицательным")
@@ -2175,43 +2219,31 @@ class Gotcha:
                 return
 
             # Определяем exe и строим аргументы
+            threads_str = str(num_threads)
             if protocol == "TCP":
                 exe_name = find_exe("NPtcpT.exe")
-                # формат: src_ip dst_ip dst_port threads duration [dst_mac] [--random-ip] [--random-mac] [--packet-size bytes]
                 src_ip = self._get_source_ip(interface)
-                args = [exe_name, src_ip, target_ip, str(port), "8", str(duration)]
-                if dst_mac:
-                    args.append(dst_mac)
+                args = [exe_name, src_ip, target_ip, str(port), threads_str, str(duration)]
                 args.append("--packet-size")
                 args.append(str(packet_size))
                 if random_ip:
                     args.append("--random-ip")
-                if random_mac:
-                    args.append("--random-mac")
             elif protocol == "UDP":
                 exe_name = find_exe("NPudpT.exe")
                 src_ip = self._get_source_ip(interface)
-                args = [exe_name, src_ip, target_ip, str(port), "8", str(duration)]
-                if dst_mac:
-                    args.append(dst_mac)
+                args = [exe_name, src_ip, target_ip, str(port), threads_str, str(duration)]
                 args.append("--packet-size")
                 args.append(str(packet_size))
                 if random_ip:
                     args.append("--random-ip")
-                if random_mac:
-                    args.append("--random-mac")
             elif protocol == "ICMP":
                 exe_name = find_exe("NPicmpT.exe")
                 src_ip = self._get_source_ip(interface)
-                args = [exe_name, src_ip, target_ip, "8", str(duration)]
-                if dst_mac:
-                    args.append(dst_mac)
+                args = [exe_name, src_ip, target_ip, threads_str, str(duration)]
                 args.append("--packet-size")
                 args.append(str(packet_size))
                 if random_ip:
                     args.append("--random-ip")
-                if random_mac:
-                    args.append("--random-mac")
             elif protocol == "ARP":
                 if self._is_ipv6(target_ip):
                     self.custom_log.insert('end', "Error: ARP не поддерживается для IPv6\n")
@@ -2219,7 +2251,7 @@ class Gotcha:
                     return
                 exe_name = find_exe("NParpT.exe")
                 src_ip = self._get_source_ip(interface)
-                args = [exe_name, src_ip, target_ip, "8", str(duration)]
+                args = [exe_name, src_ip, target_ip, threads_str, str(duration)]
                 if dst_mac:
                     args.append(dst_mac)
                 if random_ip:
@@ -2239,10 +2271,13 @@ class Gotcha:
             self.custom_log.insert('end', f"{protocol} flood started\n")
             self.custom_log.insert('end', f"Target: {target_ip}" + (f":{port}" if protocol in ["TCP","UDP"] else "") + "\n")
             self.custom_log.insert('end', f"Interface: {interface}\n")
+            self.custom_log.insert('end', f"Threads: {num_threads}\n")
             if protocol in ["TCP", "UDP", "ICMP", "ARP"]:
-                self.custom_log.insert('end', f"Random IP: {'yes' if random_ip else 'no'}, Random MAC: {'yes' if random_mac else 'no'}\n")
-            if dst_mac:
-                self.custom_log.insert('end', f"Dest MAC: {dst_mac}\n")
+                self.custom_log.insert('end', f"Random IP: {'yes' if random_ip else 'no'}\n")
+            if protocol == "ARP":
+                self.custom_log.insert('end', f"Random MAC: {'yes' if random_mac else 'no'}\n")
+                if dst_mac:
+                    self.custom_log.insert('end', f"Dest MAC: {dst_mac}\n")
             if protocol not in ["ARP", "DNS"]:
                 self.custom_log.insert('end', f"Packet size: {packet_size} bytes\n")
 
@@ -2735,18 +2770,21 @@ https://github.com/hedromanie
 
 ТРЕБОВАНИЯ:
 • Права администратора
-• Windows 10 21h2+ или Linux (с адаптацией)
-• Установленный Npcap
-• Wireshark рекомендуется для мониторинга трафика в сети
-• Для поиска уязвимостей рекомендуется Nmap / Zenmap GUI
-• Советую также для обучения Metasploit Framework или Kali Linux / BlackArch
+• Windows 10 21H2+ (или новее)
+• WinDivert.dll + WinDivert64.sys рядом с exe (для TCP / UDP / ICMP)
+• Установленный Npcap (для ARP / MAC flood и сниффинга)
+• Wireshark рекомендуется для мониторинга трафика
+• Для поиска уязвимостей: Nmap / Zenmap
+• Для обучения: Metasploit / Kali / BlackArch
 
-Если у вас возникли некие проблемы или вас не устраивает скорость DOS атаки
-откройте корневую папку программы и найдите Guide.html
-Там подробно расписаны решения проблем
+DoS (TCP/UDP/ICMP) работают через WinDivert — Npcap для них не нужен.
+ARP и MAC flood по-прежнему используют Npcap (L2).
 
-Если у вас не работает ARP spoofing / Происходит конфликт ip-адрессов / Жертва не может достучаться до шлюза
-Откройте Powershell и впишите данные команды
+Если у вас возникли проблемы или вас не устраивает скорость DoS-атаки —
+откройте корневую папку программы и найдите Guide.html.
+
+Если не работает ARP spoofing / конфликт IP / жертва не достучится до шлюза,
+в PowerShell:
 
 Get-Service RemoteAccess
 Set-Service RemoteAccess -StartupType Automatic
@@ -2815,17 +2853,14 @@ Start-Service RemoteAccess
    • Используется для проверки устойчивости DHCP-сервера.
 3. DoS АТАКИ (ФЛУД)
    Поддерживаются протоколы: TCP, UDP, ICMP, ARP, DNS.
-   • TCP SYN flood – отправка TCP-пакетов с флагом SYN, инициирующих
-     соединения.
-   • UDP flood – массовая отправка UDP-пакетов на случайные или фиксированные
-     порты.
-   • ICMP flood – непрерывная отправка ICMP Echo Request (ping).
-   • ARP flood – лавинная отправка ARP-запросов, вызывающая перегрузку
-     коммутаторов и ARP-таблиц.
-   • DNS flood – запросы к DNS-серверу с поддельными именами, истощающие
-     его ресурсы.
-   • Для TCP, ARP, ICMP доступны опции случайного IP и MAC-адреса источника
-     (имитация распределённой атаки).
+   • TCP SYN flood – TCP-пакеты с флагом SYN (WinDivert).
+   • UDP flood – массовая отправка UDP (WinDivert).
+   • ICMP flood – ICMP Echo Request (WinDivert).
+   • ARP flood – ARP-запросы (Npcap, L2).
+   • DNS flood – запросы с поддельными именами (Scapy).
+   • Для TCP/UDP/ICMP: опция случайного IP-источника.
+   • Для ARP: случайный IP и/или MAC источника.
+   • Число потоков настраивается (1–8).
 4. ARP SPOOFING (ПОДМЕНА ARP)
    • Атака типа «человек посередине» на канальном уровне.
    • Отправляет поддельные ARP-ответы, убеждая целевое устройство и шлюз,
@@ -2913,32 +2948,65 @@ Start-Service RemoteAccess
         self.root.destroy()
 
 def check_admin():
-    if platform.system() == "Windows":
-        try:
-            return ctypes.windll.shell32.IsUserAnAdmin()
-        except:
-            return False
-    return True
+    if platform.system() != "Windows":
+        return True
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+def relaunch_as_admin():
+    """Перезапуск с UAC. Для .py — python + скрипт; для frozen — сам exe."""
+    if getattr(sys, "frozen", False):
+        executable = sys.executable
+        params = " ".join(f'"{a}"' for a in sys.argv[1:])
+    else:
+        executable = sys.executable
+        script = os.path.abspath(sys.argv[0])
+        rest = " ".join(f'"{a}"' for a in sys.argv[1:])
+        params = f'"{script}" {rest}'.strip()
+    ret = ctypes.windll.shell32.ShellExecuteW(
+        None, "runas", executable, params, None, 1
+    )
+    return ret > 32
 
 def main():
     if platform.system() == "Windows" and not check_admin():
-        messagebox.showerror("Требуются права администратора", 
-                           "Программа должна быть запущена от имени администратора.")
-        try:
-            ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, " ".join(sys.argv), None, 1)
-        except:
-            pass
-        return
-    # Включение IP forwarding и RemoteAccess
+        if not relaunch_as_admin():
+            try:
+                ctypes.windll.user32.MessageBoxW(
+                    None,
+                    "Не удалось получить права администратора.\nЗапустите Gotcha от имени администратора.",
+                    "Gotcha",
+                    0x10,
+                )
+            except Exception:
+                pass
+        sys.exit(0)
+
+    # IP forwarding + RemoteAccess (нужно для ARP spoof)
     try:
-        subprocess.run(["powershell", "-Command", "Set-ItemProperty -Path \"HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\" -Name \"IPEnableRouter\" -Value 1"], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-        subprocess.run(["powershell", "-Command", "Set-Service RemoteAccess -StartupType Automatic"], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-        subprocess.run(["powershell", "-Command", "Start-Service RemoteAccess"], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-    except:
+        flags = subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0
+        subprocess.run(
+            ["powershell", "-Command",
+             "Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters' "
+             "-Name 'IPEnableRouter' -Value 1"],
+            capture_output=True, creationflags=flags,
+        )
+        subprocess.run(
+            ["powershell", "-Command", "Set-Service RemoteAccess -StartupType Automatic"],
+            capture_output=True, creationflags=flags,
+        )
+        subprocess.run(
+            ["powershell", "-Command", "Start-Service RemoteAccess"],
+            capture_output=True, creationflags=flags,
+        )
+    except Exception:
         pass
+
     root = tk.Tk()
     app = Gotcha(root)
-    app.show_initial_warning()   # <--- добавлен вызов предупреждения
+    app.show_initial_warning()
     root.protocol("WM_DELETE_WINDOW", app.on_closing)
     root.mainloop()
 

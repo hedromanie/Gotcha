@@ -228,6 +228,9 @@ void print_stats(uint64_t packets, double elapsed, double pps) {
 }
 
 int main(int argc, char* argv[]) {
+    // Npcap без WinPcap-compatible mode кладёт DLL в System32\Npcap\
+    SetDllDirectoryA("C:\\Windows\\System32\\Npcap");
+
     // Проверка минимального количества аргументов: нужно хотя бы 3: <interface или auto> <threads> <duration>
     if (argc < 4) {
         std::cerr << "Usage: " << argv[0]

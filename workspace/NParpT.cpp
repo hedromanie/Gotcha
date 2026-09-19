@@ -194,6 +194,9 @@ public:
 // main
 // ------------------------------------------------------------
 int main(int argc, char* argv[]) {
+    // Npcap без WinPcap-compatible mode кладёт DLL в System32\Npcap\
+    SetDllDirectoryA("C:\\Windows\\System32\\Npcap");
+
     if (argc < 5) {
         std::cerr << "Usage: arp.exe <src_ip> <dst_ip> <threads> <duration_sec> [dst_mac] [--random-ip] [--random-mac]\n";
         return 1;
@@ -256,4 +259,4 @@ int main(int argc, char* argv[]) {
     std::cout << "Packets: " << pkts << "\nPPS: " << pps << "\nMbps: " << mbps << "\n";
     for (auto h : handles) pcap_close(h);
     return 0;
-}
+} 
