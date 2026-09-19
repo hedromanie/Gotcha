@@ -20,18 +20,51 @@ import sys
 from pathlib import Path
 
 # --- Константы ---
-SCRIPT_DIR = Path(__file__).resolve().parent
+def _app_dir() -> Path:
+    """Папка с exe (PyInstaller) или со скриптом. Рядом лежат DLL/NPFInstall."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+SCRIPT_DIR = _app_dir()
 SYSTEM32 = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
 DRIVERS_DIR = SYSTEM32 / "drivers"
 
 DLL_FILES = ["wpcap.dll", "packet.dll"]
-DRIVER_FILES = ["npf.sys"]
+# В бандле может быть npf.sys или npcap.sys
+DRIVER_FILES = ["npf.sys", "npcap.sys"]
 
-# В режиме совместимости служба называется npf, а не npcap
-SERVICE_NAMES = ["npf", "npcap"]  # удаляем обе на всякий случай
-
-# Возможные имена файлов установщика Npcap
+SERVICE_NAMES = ["npf", "npcap"]
 NPF_INSTALL_CANDIDATES = ["NPFInstall.exe"]
+
+
+def has_console() -> bool:
+    """False при сборке --noconsole или если stdin недоступен."""
+    try:
+        if sys.stdin is None or not hasattr(sys.stdin, "isatty"):
+            return False
+        return bool(sys.stdin.isatty())
+    except Exception:
+        return False
+
+
+def msgbox(text: str, title: str = "Gotcha Npcap", flags: int = 0x40) -> int:
+    """MessageBox (MB_OK | icon). flags: 0x40=info, 0x10=error, 0x24=yes/no+question."""
+    try:
+        return int(ctypes.windll.user32.MessageBoxW(None, text, title, flags))
+    except Exception:
+        return 0
+
+
+def safe_pause(msg: str = "Done.") -> None:
+    if has_console():
+        try:
+            input(f"\n{msg} Press Enter to exit...")
+        except Exception:
+            pass
+    else:
+        msgbox(msg, "Gotcha Npcap", 0x40)
 
 
 # ---------------------------------------------------------------------------
@@ -45,13 +78,20 @@ def is_admin() -> bool:
 
 
 def relaunch_as_admin() -> None:
-    script = os.path.abspath(__file__)
-    params = " ".join(f'"{a}"' for a in sys.argv[1:])
+    """UAC: для frozen — сам exe; для .py — python + скрипт."""
+    if getattr(sys, "frozen", False):
+        executable = sys.executable
+        params = " ".join(f'"{a}"' for a in sys.argv[1:])
+    else:
+        executable = sys.executable
+        script = os.path.abspath(sys.argv[0])
+        rest = " ".join(f'"{a}"' for a in sys.argv[1:])
+        params = f'"{script}" {rest}'.strip()
     ret = ctypes.windll.shell32.ShellExecuteW(
-        None, "runas", sys.executable, f'"{script}" {params}', None, 1
+        None, "runas", executable, params, None, 1
     )
     if ret <= 32:
-        print("[!] Не удалось получить права администратора. Код:", ret)
+        msgbox(f"Failed to elevate (code {ret}). Run as Administrator.", "Gotcha Npcap", 0x10)
         sys.exit(1)
     sys.exit(0)
 
@@ -67,9 +107,15 @@ def find_npf_install() -> Path | None:
     return None
 
 
-def run(cmd: list, timeout: int = 60) -> subprocess.CompletedProcess | None:
+def run(cmd: list, timeout: int = 60, cwd: Path | None = None) -> subprocess.CompletedProcess | None:
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=str(cwd) if cwd else None,
+        )
     except subprocess.TimeoutExpired:
         print(f"    [!] Команда зависла: {' '.join(cmd)}")
     except Exception as e:
@@ -108,9 +154,8 @@ def check_files_install() -> None:
     for name in DLL_FILES + ["NPFInstall.exe"]:
         if not (SCRIPT_DIR / name).is_file():
             missing.append(name)
-    # npf.sys не обязателен, но полезен — предупредим, если нет
-    if not (SCRIPT_DIR / "npf.sys").is_file():
-        print("[~] Предупреждение: рядом нет npf.sys — NPFInstall может его не найти.")
+    if not any((SCRIPT_DIR / n).is_file() for n in DRIVER_FILES):
+        print("[~] Warning: no npf.sys / npcap.sys next to the exe — NPFInstall may fail.")
     if missing:
         print("[!] Не найдены следующие файлы рядом со скриптом:")
         for m in missing:
@@ -141,18 +186,20 @@ def install_driver() -> None:
         print("[!] NPFInstall.exe не найден рядом со скриптом.")
         sys.exit(1)
 
-    print(f"[*] Установка драйвера: {exe.name} -i ...")
-    r = run([str(exe), "-i"], timeout=120)
+    # NPFInstall ищет .sys/.inf/.cat в cwd — всегда работаем из SCRIPT_DIR
+    print(f"[*] Установка драйвера: {exe.name} -i")
+    print(f"    cwd = {SCRIPT_DIR}")
+    r = run([str(exe), "-i"], timeout=120, cwd=SCRIPT_DIR)
     if r is None:
         sys.exit(1)
 
-    if r.stdout.strip():
+    if r.stdout and r.stdout.strip():
         print("    STDOUT:", r.stdout.strip())
-    if r.stderr.strip():
+    if r.stderr and r.stderr.strip():
         print("    STDERR:", r.stderr.strip())
 
     if r.returncode != 0:
-        print(f"    [!] NPFInstall вернул код {r.returncode}. Проверьте антивирус и другие NDIS-фильтры.")
+        print(f"    [!] NPFInstall вернул код {r.returncode}. Проверьте антивирус и NDIS-фильтры.")
         sys.exit(1)
     print("    [+] Драйвер установлен.")
 
@@ -178,19 +225,26 @@ def set_registry_compat_flag() -> None:
 
 
 def verify_install() -> None:
-    print("[*] Проверка службы npf...")
-    r = run(["sc", "query", "npf"])
-    if r is None:
-        return
-    out = r.stdout.strip()
-    if "RUNNING" in out:
-        print("    [+] Служба npf работает (RUNNING).")
-    elif "STOPPED" in out:
-        print("    [~] Служба npf создана, но остановлена. Пробуем запустить...")
-        run(["sc", "start", "npf"])
-    else:
-        print("    [?] Ответ sc query npf:")
-        print(out)
+    print("[*] Проверка служб npf / npcap...")
+    found = False
+    for name in SERVICE_NAMES:
+        r = run(["sc", "query", name])
+        if r is None:
+            continue
+        out = (r.stdout or "").strip()
+        if r.returncode != 0 and "FAILED" in out.upper():
+            print(f"    [~] {name}: не найдена")
+            continue
+        found = True
+        if "RUNNING" in out:
+            print(f"    [+] Служба {name}: RUNNING")
+        elif "STOPPED" in out:
+            print(f"    [~] Служба {name}: STOPPED — start...")
+            run(["sc", "start", name])
+        else:
+            print(f"    [?] sc query {name}:\n{out}")
+    if not found:
+        print("    [!] Ни npf, ни npcap не найдены после установки.")
 
 
 def do_install() -> None:
@@ -219,19 +273,18 @@ def uninstall_driver() -> None:
     if not exe:
         print("[~] NPFInstall.exe не найден — пропускаем штатное удаление драйвера.")
         return
-
-    print(f"[*] Удаление драйвера через {exe.name} -u ...")
-    r = run([str(exe), "-u"], timeout=120)
+    print(f"[*] Удаление драйвера: {exe.name} -u (cwd={SCRIPT_DIR})")
+    r = run([str(exe), "-u"], timeout=120, cwd=SCRIPT_DIR)
     if r is None:
         return
-    if r.stdout.strip():
+    if r.stdout and r.stdout.strip():
         print("    STDOUT:", r.stdout.strip())
-    if r.stderr.strip():
+    if r.stderr and r.stderr.strip():
         print("    STDERR:", r.stderr.strip())
     if r.returncode == 0:
         print("    [+] Штатное удаление драйвера успешно.")
     else:
-        print(f"    [~] NPFInstall вернул код {r.returncode} (это нормально, если драйвер уже был удалён).")
+        print(f"    [~] NPFInstall -u code {r.returncode} (нормально, если драйвер уже снят).")
 
 
 def remove_services() -> None:
@@ -329,19 +382,42 @@ def do_uninstall() -> None:
 # ---------------------------------------------------------------------------
 # МЕНЮ И ТОЧКА ВХОДА
 # ---------------------------------------------------------------------------
-def print_menu() -> str:
-    print("=" * 60)
-    print(" Npcap WinPcap-compatible — управление установкой")
-    print("=" * 60)
-    print("  1 — Установить")
-    print("  2 — Удалить")
-    print("  0 — Выход")
-    print("=" * 60)
-    return input("Выберите действие [0/1/2]: ").strip()
+# МЕНЮ И ТОЧКА ВХОДА
+# ---------------------------------------------------------------------------
+def choose_mode_interactive():
+    """Консоль или MessageBox. Возвращает install / uninstall / exit."""
+    if has_console():
+        print("=" * 60)
+        print(" Npcap WinPcap-compatible — install helper")
+        print("=" * 60)
+        print("  1 — Install")
+        print("  2 — Uninstall")
+        print("  0 — Exit")
+        print("=" * 60)
+        try:
+            choice = input("Choose [0/1/2]: ").strip()
+        except Exception:
+            choice = "1"
+        return {"1": "install", "2": "uninstall", "0": "exit"}.get(choice)
+
+    # MB_YESNOCANCEL | MB_ICONQUESTION = 0x23
+    r = msgbox(
+        "Gotcha Npcap helper\n\n"
+        "Yes = Install (WinPcap-compatible)\n"
+        "No = Uninstall\n"
+        "Cancel = Exit\n\n"
+        "Tip: use --install or --uninstall to skip this dialog.",
+        "Gotcha Npcap",
+        0x23,
+    )
+    if r == 6:
+        return "install"
+    if r == 7:
+        return "uninstall"
+    return "exit"
 
 
 def main() -> None:
-    # Разбор аргументов командной строки
     args = sys.argv[1:]
     mode = None
     if "--install" in args:
@@ -351,27 +427,40 @@ def main() -> None:
     elif args and args[0].isdigit():
         mode = {"1": "install", "2": "uninstall", "0": "exit"}.get(args[0])
 
-    # Если прав нет — перезапускаемся с UAC
     if not is_admin():
-        print("[*] Запрашиваем права администратора...")
+        if has_console():
+            print("[*] Requesting Administrator...")
         relaunch_as_admin()
-        return  # сюда управление не вернётся
+        return
 
     if mode is None:
-        choice = print_menu()
-        mode = {"1": "install", "2": "uninstall", "0": "exit"}.get(choice)
+        mode = choose_mode_interactive()
         if mode is None:
-            print("[!] Неверный выбор.")
+            if has_console():
+                print("[!] Invalid choice.")
+            else:
+                msgbox("Invalid choice.", "Gotcha Npcap", 0x10)
             sys.exit(1)
 
-    if mode == "install":
-        do_install()
-    elif mode == "uninstall":
-        do_uninstall()
-    else:
-        sys.exit(0)
-
-    input("\nНажмите Enter для выхода...")
+    # Пауза только если пользователь зашёл через меню (без --install/--uninstall)
+    interactive = "--install" not in args and "--uninstall" not in args
+    try:
+        if mode == "install":
+            do_install()
+            safe_pause("Install finished.", force=interactive)
+        elif mode == "uninstall":
+            do_uninstall()
+            safe_pause("Uninstall finished. Reboot recommended.", force=interactive)
+        else:
+            sys.exit(0)
+    except SystemExit:
+        raise
+    except Exception as e:
+        if has_console():
+            print(f"[!] Fatal: {e}")
+        else:
+            msgbox(f"Error:\n{e}", "Gotcha Npcap", 0x10)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
