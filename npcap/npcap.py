@@ -1,14 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-install_npcap_compat.py
-Установка / удаление Npcap в режиме совместимости с WinPcap.
-
-Установка:
-    python install_npcap_compat.py            # интерактивное меню
-    python install_npcap_compat.py --install  # сразу установка
-    python install_npcap_compat.py --uninstall# сразу удаление
-
 Файлы wpcap.dll, packet.dll, NPFInstall.exe и npf.sys должны лежать рядом со скриптом.
 """
 
